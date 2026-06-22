@@ -9,7 +9,7 @@
 
 namespace Furble {
 /**
- * Nikon Coolpix B600.
+ * Nikon Coolpix B600 / Z-series.
  */
 class Nikon: public Camera, public NimBLEScanCallbacks {
  public:
@@ -18,7 +18,7 @@ class Nikon: public Camera, public NimBLEScanCallbacks {
   ~Nikon();
 
   /**
-   * Determine if the advertised BLE device is a Nikon Coolpix B600.
+   * Determine if the advertised BLE device is a Nikon.
    */
   static bool matches(const NimBLEAdvertisedDevice *pDevice);
 
@@ -30,6 +30,9 @@ class Nikon: public Camera, public NimBLEScanCallbacks {
   size_t getSerialisedBytes(void) const override;
   bool serialise(void *buffer, size_t bytes) const override;
 
+  // Smart-path public helpers
+  bool remoteEnable(bool enable);
+  bool writeCurrentTime(const timesync_t &timesync);
  protected:
   bool _connect(void) override final;
   void _disconnect(void) override final;
@@ -100,6 +103,8 @@ class Nikon: public Camera, public NimBLEScanCallbacks {
     static const std::vector<uint8_t> KEY;
     static const std::array<std::array<uint32_t, 2>, 8> SALT;
     int8_t m_Salt = -1;
+    // Selected at runtime after stage-2 validation: true = swapped 32-bit words.
+    bool m_UseSwappedWords = true;
   };
 
   static constexpr uint16_t COMPANY_ID = 0x0399;
@@ -167,36 +172,65 @@ class Nikon: public Camera, public NimBLEScanCallbacks {
   // Re-pair scan time
   static constexpr uint32_t SCAN_TIME_MS = 60000;
 
-  // Service UUID from advertisement data
+  // -----------------------------------------------------------------------
+  // GATT handle constants (observed on Z6III, identical to Z50II).
+  // Used as fallback when UUID-based lookup fails.
+  //
+  // Handle layout relative to SERVICE_UUID start handle 0x0040:
+  //   0x0042 AUTHENTICATION (0x2000)
+  //   0x0047 CLIENT_DEVICE_NAME (0x2002)
+  //   0x004f CURRENT_TIME (0x2006)
+  //   0x0051 LOCATION_INFORMATION (0x2007)
+  //   0x0053 LSS_CONTROL_POINT (0x2008)        ← CCC 0x0054
+  //   0x005a LSS_CABLE_ATTACHMENT (0x200a)     ← CCC 0x005b
+  //   0x005f LSS_STATUS_FOR_CONTROL (0x2020)   ← CCC 0x0060
+  //   0x0062 LSS_CONTROL_POINT_FOR_CONTROL (0x2021) ← CCC 0x0063
+  // -----------------------------------------------------------------------
+  static constexpr uint16_t HANDLE_LSS_CONTROL_POINT = 0x0053;
+  static constexpr uint16_t HANDLE_LSS_CABLE_ATTACHMENT = 0x005a;
+  static constexpr uint16_t HANDLE_LSS_STATUS_FOR_CONTROL = 0x005f;
+  static constexpr uint16_t HANDLE_LSS_CONTROL_POINT_FOR_CONTROL = 0x0062;
+
+  // -----------------------------------------------------------------------
+  // Service UUID — DE00 (Nikon LSS, all Z-series and Coolpix BLE cameras)
+  // -----------------------------------------------------------------------
   static const NimBLEUUID SERVICE_UUID;
 
   // Subscription UUIDs
-  const NimBLEUUID NOT1_CHR_UUID {0x00002008, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
-  const NimBLEUUID NOT2_CHR_UUID {0x0000200a, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  const NimBLEUUID LSS_CONTROL_POINT_UUID {0x00002008, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561}; // LSS_CONTROL_POINT
+  const NimBLEUUID LSS_CABLE_ATTACHMENT_UUID {0x0000200a, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561}; // LSS_CABLE_ATTACHMENT
 
   // Stage UUIDs
-  const NimBLEUUID PAIR_CHR_UUID {0x00002000, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  const NimBLEUUID PAIR_CHR_UUID {0x00002000, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561}; // AUTHENTICATION 
 
-  const NimBLEUUID UNK1_CHR_UUID {0x00002009, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
-  const NimBLEUUID UNK2_CHR_UUID {0x00002080, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
-  const NimBLEUUID UNK3_CHR_UUID {0x00002086, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
-  const NimBLEUUID UNK4_CHR_UUID {0x00002001, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
-  const NimBLEUUID UNK5_CHR_UUID {0x00002082, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
-  const NimBLEUUID UNK6_CHR_UUID {0x00002084, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
-  const NimBLEUUID UNK7_CHR_UUID {0x00002001, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  // const NimBLEUUID POWER_CONTROL_CHR_UUID {0x00002001, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};  
 
   // Identifier UUIDs
-  const NimBLEUUID ID_CHR_UUID {0x00002002, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  const NimBLEUUID CLIENT_DEVICE_NAME_CHR_UUID {0x00002002, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  const NimBLEUUID SERVER_DEVICE_NAME_CHR_UUID {0x00002003, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
 
   // Time and Location UUIDs
   const NimBLEUUID TIME_CHR_UUID {0x00002006, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
   const NimBLEUUID GEO_CHR_UUID {0x00002007, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
 
-  // Unknown UUIDs
-  const NimBLEUUID UNK0_CHR_UUID {0x00002009, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  const NimBLEUUID LSS_FEATURE_CHR_UUID {0x00002009, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
 
+  const NimBLEUUID LSS_SERIAL_NUMBER_STRING_CHR_UUID {0x0000200B, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+
+  // Indicate (camera → ESP32): 16-byte smart device status.
+  // Subscribed FOURTH. Snapshot cached in m_LastSmartStatus.
+  // Confirmed handle 0x005f on both Z50II and Z6III, CCC: 0x0060.
+  const NimBLEUUID LSS_STATUS_FOR_CONTROL_UUID {0x00002020, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  
+  // Write/indicate (ESP32 → camera): smart device control commands.
+  //   [05 00 11 00 01/00] remote enable/disable
+  //   [06 00 12 00 02 vv] AF press/release
+  //   [06 00 12 00 03 vv] shutter press/release
+  // Subscribed FIFTH. Confirmed handle 0x0062 on both Z50II and Z6III, CCC: 0x0063.
+  const NimBLEUUID LSS_CONTROL_POINT_FOR_CONTROL_UUID {0x00002021, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  
   // Remote UUIDs
-  const NimBLEUUID REMOTE_R1_CHR_UUID {0x00002080, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
+  const NimBLEUUID REMOTE_R1_CHR_UUID {0x00002080, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};  // LSS_CATEGORY_INFO
   const NimBLEUUID REMOTE_W1_CHR_UUID {0x00002082, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
   const NimBLEUUID REMOTE_SHUTTER_CHR_UUID {0x00002083, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
   const NimBLEUUID REMOTE_IND1_CHR_UUID {0x00002084, 0x3dd4, 0x4255, 0x8d626dc7b9bd5561};
@@ -220,13 +254,53 @@ class Nikon: public Camera, public NimBLEScanCallbacks {
   static const uint8_t CMD_PRESS = 0x02;
   static const uint8_t CMD_RELEASE = 0x00;
 
+  // -------------------------------------------------------------------------
+  // Member variables
+  // -------------------------------------------------------------------------
   uint64_t m_Timestamp;
   Pairing::id_t m_ID;
   NimBLERemoteCharacteristic *m_PairChr = nullptr;
+  NimBLERemoteCharacteristic *m_SmartStatusChr = nullptr;
+  NimBLERemoteCharacteristic *m_SmartCmdChr = nullptr;
   std::unique_ptr<Pairing> m_Pairing = nullptr;
+
+  // Last status indication snapshot (LSS_STATUS_FOR_CONTROL / 0x2020)
+  volatile uint8_t m_LastSmartStatus[16] = {0};
+  volatile uint8_t m_LastSmartStatusLen = 0;
+  volatile uint32_t m_SmartStatusSeq = 0;
 
   QueueHandle_t m_Queue;
 
+  bool m_RemoteEnabled = false;
+
+  // -------------------------------------------------------------------------
+  // Private smart-path helpers
+  // -------------------------------------------------------------------------
+
+  /** Smart path is active when pairing uses AUTHENTICATION (0x2000). */
+  bool isSmartPairingActive(void) const;
+
+  /**
+   * Centralized smart command write with duplicate suppression.
+   * Suppresses identical back-to-back writes within a 40 ms window.
+   */
+  bool writeSmartCommand(const uint8_t *data, size_t length);
+
+  /** Convenience wrapper: [op 00 group 00 code value] smart command frame. */
+  bool sendSmartRemoteControl(uint8_t op, uint8_t group, uint8_t code, uint8_t value);
+
+  // Last smart command snapshot used by writeSmartCommand duplicate filter.
+  std::array<uint8_t, 8> m_LastSmartCmd = {0};
+  uint8_t m_LastSmartCmdLen = 0;
+  uint32_t m_LastSmartCmdMs = 0;
+  bool m_SendTimestamp = true;  // send timestamp once before position update
+  int32_t m_LatitudeSent {0};   // store longitude to force position resend when it changes
+  int32_t m_LongitudeSent {0};  // store longitude to force position resend when it changes
+
+  // -------------------------------------------------------------------------
+  // Other private helpers
+  // -------------------------------------------------------------------------
+  
   /**
    * Convert decimal degrees to degrees, minutes and sub-minute parts.
    */
